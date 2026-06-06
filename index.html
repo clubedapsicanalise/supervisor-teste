@@ -4,96 +4,198 @@
     <meta charset="UTF-8">
     <title>Supervisor - Clube da Psicanálise</title>
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: white; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        #video-container { width: 100%; max-width: 800px; height: 450px; background-color: #000; border-radius: 12px; border: 2px solid #d4af37; overflow: hidden; margin-bottom: 20px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: white; display: flex; flex-direction: column; align-items: center; padding: 20px; gap: 16px; }
+        h2 { color: #d4af37; font-size: 18px; letter-spacing: 1px; text-transform: uppercase; }
+        #video-container { width: 100%; max-width: 800px; height: 450px; background-color: #000; border-radius: 12px; border: 2px solid #d4af37; overflow: hidden; position: relative; }
         video { width: 100%; height: 100%; object-fit: cover; }
+        #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); font-size: 14px; color: #94a3b8; text-align: center; padding: 20px; }
         .controls { display: flex; gap: 10px; width: 100%; max-width: 800px; }
-        input { flex-grow: 1; padding: 12px; border-radius: 6px; border: 1px solid #475569; background: #1e293b; color: white; }
-        button { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; }
+        input { flex-grow: 1; padding: 12px; border-radius: 6px; border: 1px solid #475569; background: #1e293b; color: white; font-size: 14px; }
+        input:disabled { opacity: 0.4; }
+        button { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         #btn-iniciar { background-color: #d4af37; color: #0f172a; }
         #btn-enviar { background-color: #3b82f6; color: white; }
+        #status { font-size: 13px; color: #94a3b8; width: 100%; max-width: 800px; }
     </style>
 </head>
 <body>
-    <div id="video-container"><video id="avatar-video" autoplay playsinline></video></div>
+    <h2>Sala de Supervisão Virtual</h2>
+    <div id="video-container">
+        <video id="avatar-video" autoplay playsinline></video>
+        <div id="overlay">Clique em <strong>"Iniciar Supervisor"</strong> para começar</div>
+    </div>
     <div class="controls">
-        <button id="btn-iniciar">Iniciar Supervisor</button>
+        <button id="btn-iniciar">▶ Iniciar Supervisor</button>
         <input type="text" id="input-fala" placeholder="Apresente o caso clínico..." disabled>
         <button id="btn-enviar" disabled>Enviar</button>
     </div>
+    <p id="status">Aguardando início...</p>
 
-    <script>
-        // As suas chaves já estão configuradas aqui!
-        const API_KEY = "899515d4-613f-11f1-8d28-066a7fa2e369"; 
-        const AVATAR_ID = "513fd1b7-7ef9-466d-9af2-344e51eeb833"; 
-        const VOICE_ID = "2f15f3df27e643029f0ff69957d08f5d";
+    <script type="module">
+        import { LiveAvatarSession } from 'https://esm.sh/@heygen/liveavatar-web-sdk@latest';
+
+        const API_KEY   = "83881aa0-58a0-11f1-8d28-066a7fa2e369";
+        const AVATAR_ID = "513fd1b7-7ef9-466d-9af2-344e51eeb833";
+        const VOICE_ID  = "2f15f3df27e643029f0ff69957d08f5d";
 
         const btnIniciar = document.getElementById('btn-iniciar');
-        const inputFala = document.getElementById('input-fala');
-        const btnEnviar = document.getElementById('btn-enviar');
-        const videoElem = document.getElementById('avatar-video');
-        let session;
+        const inputFala  = document.getElementById('input-fala');
+        const btnEnviar  = document.getElementById('btn-enviar');
+        const videoElem  = document.getElementById('avatar-video');
+        const overlay    = document.getElementById('overlay');
+        const statusEl   = document.getElementById('status');
+
+        let session = null;
+        let videoTrack = null;
+        let audioTrack = null;
+
+        function setStatus(msg) {
+            statusEl.textContent = msg;
+            console.log('[Supervisor]', msg);
+        }
+
+        function tryAttachStream() {
+            if (!videoTrack) return;
+            const stream = new MediaStream();
+            stream.addTrack(videoTrack);
+            if (audioTrack) stream.addTrack(audioTrack);
+            videoElem.srcObject = stream;
+            videoElem.play().catch(e => console.warn('play error:', e));
+            overlay.style.display = 'none';
+            inputFala.disabled = false;
+            btnEnviar.disabled = false;
+            btnIniciar.textContent = '🟢 Conectado';
+            setStatus('Supervisor online. Apresente o caso clínico.');
+        }
+
+        function setOffline(msg = 'Sessão encerrada.') {
+            overlay.style.display = 'flex';
+            overlay.textContent = msg;
+            inputFala.disabled = true;
+            btnEnviar.disabled = true;
+            btnIniciar.textContent = '▶ Iniciar Supervisor';
+            btnIniciar.disabled = false;
+            videoTrack = null;
+            audioTrack = null;
+            session = null;
+            setStatus(msg);
+        }
 
         btnIniciar.addEventListener('click', async () => {
-            btnIniciar.innerText = "A ligar motores...";
             btnIniciar.disabled = true;
-            
-            try {
-                // A SOLUÇÃO: Importação dinâmica para driblar a segurança do Wix
-                const HeyGenModulo = await import('https://esm.sh/@heygen/liveavatar-web-sdk');
-                const LiveAvatarSession = HeyGenModulo.LiveAvatarSession;
+            btnIniciar.textContent = 'A conectar...';
+            setStatus('Obtendo token...');
 
-                btnIniciar.innerText = "A conectar ao servidor...";
+            try {
                 const res = await fetch('https://api.liveavatar.com/v1/sessions/token', {
                     method: 'POST',
-                    headers: { 'X-Api-Key': API_KEY.trim(), 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        mode: "LITE",
+                    headers: {
+                        'X-Api-Key': API_KEY,
+                        'Content-Type': 'application/json',
+                        'accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        mode: 'FULL',
                         avatar_id: AVATAR_ID,
-                        voice_id: VOICE_ID
+                        is_sandbox: false,
+                        avatar_persona: {
+                            voice_id: VOICE_ID,
+                            language: 'pt'
+                        }
                     })
                 });
-                
-                const responseData = await res.json();
-                const tokenReal = responseData?.data?.session_token || responseData?.data?.token;
 
-                if (!tokenReal) {
-                    throw new Error("Erro de servidor: " + JSON.stringify(responseData));
-                }
+                const data = await res.json();
+                console.log('[Supervisor] Token response:', data);
+                const token = data?.data?.token || data?.data?.session_token || data?.token;
+                if (!token) throw new Error('Token não recebido: ' + JSON.stringify(data));
 
-                btnIniciar.innerText = "A gerar sala de vídeo...";
-                session = new LiveAvatarSession(tokenReal);
-                
-                session.on("session_stream_ready", (event) => {
-                    videoElem.srcObject = event.detail;
+                setStatus('Token obtido. Iniciando sessão...');
+                session = new LiveAvatarSession(token, { voiceChat: false });
+
+                // Evento principal de stream
+                session.on('session_stream_ready', (event) => {
+                    console.log('[Supervisor] session_stream_ready:', event);
+                    const stream = event?.detail ?? event?.stream ?? event;
+                    if (stream instanceof MediaStream) {
+                        videoElem.srcObject = stream;
+                        videoElem.play().catch(e => console.warn(e));
+                        overlay.style.display = 'none';
+                        inputFala.disabled = false;
+                        btnEnviar.disabled = false;
+                        btnIniciar.textContent = '🟢 Conectado';
+                        setStatus('Supervisor online.');
+                    }
                 });
 
-                await session.start({ 
-                    avatar_id: AVATAR_ID,
-                    voice_id: VOICE_ID
+                // Captura trilhas individuais (modo LITE publica assim)
+                session.on('trackPublished', (track) => {
+                    console.log('[Supervisor] trackPublished:', track);
+                    const t = track?.track ?? track;
+                    if (!t?.kind) return;
+                    if (t.kind === 'video') { videoTrack = t.mediaStreamTrack ?? t; tryAttachStream(); }
+                    if (t.kind === 'audio') { audioTrack = t.mediaStreamTrack ?? t; tryAttachStream(); }
                 });
-                
-                btnIniciar.innerText = "Supervisor Online";
-                inputFala.disabled = false;
-                btnEnviar.disabled = false;
+
+                // Fallback via room
+                session.on('session_started', () => {
+                    const room = session?.room;
+                    if (!room) return;
+                    room.on('trackSubscribed', (track) => {
+                        console.log('[Supervisor] trackSubscribed via room:', track);
+                        if (track.kind === 'video') { videoTrack = track.mediaStreamTrack; tryAttachStream(); }
+                        if (track.kind === 'audio') { audioTrack = track.mediaStreamTrack; tryAttachStream(); }
+                    });
+                });
+
+                session.on('session.stopped', () => setOffline('Sessão encerrada.'));
+                session.on('disconnected', () => setOffline('Desconectado.'));
+
+                await session.start();
+                setStatus('Sessão iniciada. Aguardando vídeo...');
+
+                // Verifica trilhas já publicadas após start
+                setTimeout(() => {
+                    const room = session?.room;
+                    if (!room) return;
+                    room.remoteParticipants?.forEach(participant => {
+                        participant.trackPublications?.forEach(pub => {
+                            const t = pub.track;
+                            if (!t) return;
+                            console.log('[Supervisor] track já publicada:', t.kind, t);
+                            if (t.kind === 'video') { videoTrack = t.mediaStreamTrack; tryAttachStream(); }
+                            if (t.kind === 'audio') { audioTrack = t.mediaStreamTrack; tryAttachStream(); }
+                        });
+                    });
+                }, 2000);
 
             } catch (err) {
-                alert("Falha técnica: " + err.message);
-                btnIniciar.innerText = "Tentar Novamente";
-                btnIniciar.disabled = false;
+                console.error('[Supervisor] Erro:', err);
+                setOffline('❌ Erro: ' + err.message);
             }
         });
 
         btnEnviar.addEventListener('click', async () => {
-            const texto = inputFala.value;
-            if(!texto || !session) return;
-            
-            inputFala.value = "";
+            const texto = inputFala.value.trim();
+            if (!texto || !session) return;
+            inputFala.value = '';
             btnEnviar.disabled = true;
-            
-            await session.speak({ text: texto });
-            
-            btnEnviar.disabled = false;
+            setStatus('Enviando...');
+            try {
+                await session.speak({ text: texto });
+                setStatus('Aguardando próxima apresentação...');
+            } catch (err) {
+                setStatus('❌ Erro ao enviar: ' + err.message);
+                console.error(err);
+            } finally {
+                btnEnviar.disabled = false;
+            }
+        });
+
+        inputFala.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !btnEnviar.disabled) btnEnviar.click();
         });
     </script>
 </body>
